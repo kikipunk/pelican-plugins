@@ -34,7 +34,7 @@ class MinecraftDatapackPage extends Page implements HasTable
     use BlockAccessInConflict;
     use InteractsWithTable;
 
-    protected static string|\BackedEnum|null $navigationIcon = 'tabler-database';
+    protected static string|\BackedEnum|null $navigationIcon = 'tabler-packages';
 
     protected static ?string $slug = 'datapacks';
 
