@@ -1,0 +1,21 @@
+{
+    "id": "minecraft-modrinth",
+    "name": "Minecraft Modrinth",
+    "author": "Kikipunk & Boy132",
+    "version": "2.0.0",
+    "description": "Easily download minecraft mods, plugins and datapacks from modrinth",
+    "category": "plugin",
+    "url": "https://github.com/kikipunk/pelican-plugins/tree/main/minecraft-modrinth",
+    "update_url": null,
+    "namespace": "KikiPunk\\MinecraftModrinth",
+    "class": "MinecraftModrinthPlugin",
+    "panels": [
+        "server"
+    ],
+    "panel_version": null,
+    "composer_packages": null,
+    "meta": {
+        "status": "enabled",
+        "status_message": null
+    }
+}
