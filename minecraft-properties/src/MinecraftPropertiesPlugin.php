@@ -1,0 +1,47 @@
+<?php
+
+namespace Kikipunk\MinecraftProperties;
+
+use Filament\Contracts\Plugin;
+use Filament\Panel;
+
+class MinecraftPropertiesPlugin implements Plugin
+{
+    public function getId(): string
+    {
+        return 'minecraft-properties';
+    }
+
+    public function register(Panel $panel): void
+    {
+        $id = str($panel->getId())->title();
+
+        $resourcesPath = plugin_path($this->getId(), "src/Filament/$id/Resources");
+        $pagesPath = plugin_path($this->getId(), "src/Filament/$id/Pages");
+        $widgetsPath = plugin_path($this->getId(), "src/Filament/$id/Widgets");
+
+        if (is_dir($resourcesPath)) {
+            $panel->discoverResources($resourcesPath, "Kikipunk\\MinecraftProperties\\Filament\\$id\\Resources");
+        }
+
+        if (is_dir($pagesPath)) {
+            $panel->discoverPages($pagesPath, "Kikipunk\\MinecraftProperties\\Filament\\$id\\Pages");
+        }
+
+        if (is_dir($widgetsPath)) {
+            $panel->discoverWidgets($widgetsPath, "Kikipunk\\MinecraftProperties\\Filament\\$id\\Widgets");
+        }
+    }
+
+    public function boot(Panel $panel): void
+    {
+        try {
+            $pluginLangPath = plugin_path($this->getId(), 'resources/lang');
+            if (is_dir($pluginLangPath)) {
+                app('translator')->addNamespace('minecraft-properties', $pluginLangPath);
+            }
+        } catch (\InvalidArgumentException $e) {
+            // Namespace already registered
+        }
+    }
+}
