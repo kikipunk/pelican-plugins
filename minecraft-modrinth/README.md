@@ -59,10 +59,6 @@ Add `modrinth_datapacks` to the _features_ of your egg.
 - `datapacks` tag
 
 **World folder detection:**
-The plugin uses environment variables to detect the world folder in this order:
-1. `LEVEL`
-2. `WORLD`
-3. `LEVEL_NAME`
-4. Falls back to `world`
+The plugin reads `level-name` from `server.properties` to detect the world folder, falling back to `world` if the file doesn't exist or the property is not set.
 
 **Install directory:** `{world_folder}/datapacks/`
