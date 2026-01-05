@@ -7,6 +7,7 @@ use App\Repositories\Daemon\DaemonFileRepository;
 use KikiPunk\MinecraftModrinth\Enums\MinecraftLoader;
 use KikiPunk\MinecraftModrinth\Enums\ModrinthProjectType;
 use Exception;
+use GuzzleHttp\Promise\Utils;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Http;
 
@@ -130,6 +131,39 @@ class MinecraftModrinthService
     }
 
     /**
+     * Clear all caches for a server's mods/plugins/datapacks
+     * Call this after downloading or deleting files
+     */
+    public function clearModsCache(Server $server, ?ModrinthProjectType $projectType = null): void
+    {
+        $projectType = $projectType ?? ModrinthProjectType::fromServer($server);
+        $folder = $projectType?->getFolder($server);
+
+        if ($folder) {
+            cache()->forget("installed_mods:{$server->uuid}:$folder");
+            // Increment cache version to invalidate all_mods_info cache
+            $versionKey = "mods_cache_version:{$server->uuid}:$folder";
+            $currentVersion = (int) cache()->get($versionKey, 0);
+            cache()->put($versionKey, $currentVersion + 1, now()->addDays(30));
+        }
+    }
+
+    /**
+     * Get the current cache version for a server's mods
+     */
+    public function getCacheVersion(Server $server, ?ModrinthProjectType $projectType = null): int
+    {
+        $projectType = $projectType ?? ModrinthProjectType::fromServer($server);
+        $folder = $projectType?->getFolder($server);
+
+        if (!$folder) {
+            return 0;
+        }
+
+        return (int) cache()->get("mods_cache_version:{$server->uuid}:$folder", 0);
+    }
+
+    /**
      * Get installed mods/plugins/datapacks from the server folder
      * @return Collection<int, array{name: string, size: int, modified_at: string}>
      */
@@ -142,28 +176,33 @@ class MinecraftModrinthService
             return collect();
         }
 
-        try {
-            $files = $fileRepository->setServer($server)->getDirectory($folder);
+        // Cache the directory listing for 5 minutes to avoid repeated daemon calls
+        $cacheKey = "installed_mods:{$server->uuid}:$folder";
 
-            if (isset($files['error'])) {
+        return cache()->remember($cacheKey, now()->addMinutes(5), function () use ($server, $fileRepository, $folder, $projectType) {
+            try {
+                $files = $fileRepository->setServer($server)->getDirectory($folder);
+
+                if (isset($files['error'])) {
+                    return collect();
+                }
+
+                // Filter based on project type
+                $extension = $projectType === ModrinthProjectType::Datapack ? '.zip' : '.jar';
+
+                return collect($files)
+                    ->filter(fn ($file) => is_array($file) && isset($file['name']) && str($file['name'])->lower()->endsWith($extension))
+                    ->map(fn ($file) => [
+                        'name' => $file['name'],
+                        'size' => $file['size'] ?? 0,
+                        'modified_at' => $file['modified_at'] ?? now()->toIso8601String(),
+                    ]);
+            } catch (Exception $exception) {
+                report($exception);
+
                 return collect();
             }
-
-            // Filter based on project type
-            $extension = $projectType === ModrinthProjectType::Datapack ? '.zip' : '.jar';
-
-            return collect($files)
-                ->filter(fn ($file) => is_array($file) && isset($file['name']) && str($file['name'])->lower()->endsWith($extension))
-                ->map(fn ($file) => [
-                    'name' => $file['name'],
-                    'size' => $file['size'] ?? 0,
-                    'modified_at' => $file['modified_at'] ?? now()->toIso8601String(),
-                ]);
-        } catch (Exception $exception) {
-            report($exception);
-
-            return collect();
-        }
+        });
     }
 
     /**
@@ -319,7 +358,103 @@ class MinecraftModrinthService
     }
 
     /**
-     * Get hashes for all installed files
+     * Compute SHA-512 hashes for multiple files in parallel
+     * Limits concurrency to avoid memory exhaustion
+     * @param array<string, array{name: string, modified_at: string}> $files Files keyed by filename
+     * @return array<string, string|null> filename => hash
+     */
+    public function getFileHashesParallel(Server $server, DaemonFileRepository $fileRepository, string $folder, array $files): array
+    {
+        $results = [];
+        $filesToFetch = [];
+
+        // Check cache first for all files
+        foreach ($files as $fileName => $fileData) {
+            $cacheKey = "file_hash:{$server->uuid}:$folder/$fileName:{$fileData['modified_at']}";
+            $cachedHash = cache()->get($cacheKey);
+
+            if ($cachedHash !== null) {
+                $results[$fileName] = $cachedHash;
+            } else {
+                $filesToFetch[$fileName] = $fileData;
+            }
+        }
+
+        // If all files were cached, return early
+        if (empty($filesToFetch)) {
+            return $results;
+        }
+
+        // Build parallel requests using Guzzle promises
+        $node = $server->node;
+        $baseUrl = $node->getConnectionAddress();
+
+        try {
+            $client = new \GuzzleHttp\Client([
+                'base_uri' => $baseUrl,
+                'timeout' => 30,
+                'connect_timeout' => 5,
+                'headers' => [
+                    'Authorization' => 'Bearer ' . $node->daemon_token,
+                    'Accept' => 'application/json',
+                ],
+                'verify' => false,
+            ]);
+
+            // Process in batches of 10 to limit memory usage
+            // Each jar file can be several MB, so we can't load all at once
+            $batches = array_chunk($filesToFetch, 10, true);
+
+            foreach ($batches as $batch) {
+                $promises = [];
+                foreach ($batch as $fileName => $fileData) {
+                    $filePath = urlencode("$folder/$fileName");
+                    $promises[$fileName] = $client->getAsync("/api/servers/{$server->uuid}/files/contents?file=$filePath");
+                }
+
+                // Wait for this batch to complete
+                $responses = Utils::settle($promises)->wait();
+
+                // Process responses and free memory immediately
+                foreach ($responses as $fileName => $response) {
+                    $fileData = $batch[$fileName];
+                    $cacheKey = "file_hash:{$server->uuid}:$folder/$fileName:{$fileData['modified_at']}";
+
+                    if ($response['state'] === 'fulfilled') {
+                        $content = (string) $response['value']->getBody();
+                        $hash = hash('sha512', $content);
+                        // Free memory immediately after hashing
+                        unset($content);
+                        cache()->put($cacheKey, $hash, now()->addHours(24));
+                        $results[$fileName] = $hash;
+                    } else {
+                        // Request failed
+                        cache()->put($cacheKey, '', now()->addHours(1));
+                        $results[$fileName] = null;
+                    }
+
+                    // Free response body memory
+                    if (isset($response['value'])) {
+                        $response['value']->getBody()->close();
+                    }
+                }
+
+                // Force garbage collection between batches
+                unset($promises, $responses);
+            }
+        } catch (Exception $exception) {
+            report($exception);
+            // Fall back to sequential fetching
+            foreach ($filesToFetch as $fileName => $fileData) {
+                $results[$fileName] = $this->getFileHash($server, $fileRepository, $folder, $fileName, $fileData['modified_at']);
+            }
+        }
+
+        return $results;
+    }
+
+    /**
+     * Get hashes for all installed files (uses parallel fetching)
      * @return array<string, string> filename => hash
      */
     public function getInstalledFileHashes(Server $server, DaemonFileRepository $fileRepository, ?ModrinthProjectType $projectType = null): array
@@ -332,64 +467,99 @@ class MinecraftModrinthService
         }
 
         $installedMods = $this->getInstalledMods($server, $fileRepository, $projectType);
-        $hashes = [];
 
-        foreach ($installedMods as $mod) {
-            $hash = $this->getFileHash($server, $fileRepository, $folder, $mod['name'], $mod['modified_at']);
-            if ($hash) {
-                $hashes[$mod['name']] = $hash;
-            }
+        if ($installedMods->isEmpty()) {
+            return [];
         }
 
-        return $hashes;
+        // Convert to format expected by getFileHashesParallel
+        $files = $installedMods->keyBy('name')->toArray();
+
+        // Use parallel fetching for speed
+        $hashes = $this->getFileHashesParallel($server, $fileRepository, $folder, $files);
+
+        // Filter out null/empty hashes
+        return array_filter($hashes, fn ($hash) => !empty($hash));
     }
 
     /**
      * Get update status for installed mods based on project_id
      * Returns array keyed by project_id with update info
+     * Cached for 5 minutes based on file modification times
      * @return array<string, array{installed: bool, has_update: bool, installed_version: ?array, latest_version: ?array}>
      */
     public function getProjectUpdateStatus(Server $server, DaemonFileRepository $fileRepository, ?ModrinthProjectType $projectType = null): array
     {
-        $fileHashes = $this->getInstalledFileHashes($server, $fileRepository, $projectType);
+        $projectType = $projectType ?? ModrinthProjectType::fromServer($server);
+        $folder = $projectType?->getFolder($server);
 
-        if (empty($fileHashes)) {
+        if (!$folder) {
             return [];
         }
 
-        $hashValues = array_values($fileHashes);
+        // Get installed mods to create a cache key based on their modification times
+        $installedMods = $this->getInstalledMods($server, $fileRepository, $projectType);
 
-        // Get current version info for all installed files
-        $currentVersions = $this->identifyModsByHash($hashValues);
-        // Check for updates
-        $updates = $this->checkForUpdates($hashValues, $server, $projectType);
-
-        $result = [];
-
-        foreach ($fileHashes as $fileName => $hash) {
-            $currentVersion = $currentVersions[$hash] ?? null;
-            $latestVersion = $updates[$hash] ?? null;
-
-            if ($currentVersion && isset($currentVersion['project_id'])) {
-                $projectId = $currentVersion['project_id'];
-                $hasUpdate = false;
-
-                if ($latestVersion) {
-                    $hasUpdate = ($currentVersion['id'] ?? null) !== ($latestVersion['id'] ?? null);
-                }
-
-                $result[$projectId] = [
-                    'installed' => true,
-                    'has_update' => $hasUpdate,
-                    'installed_version' => $currentVersion,
-                    'latest_version' => $latestVersion,
-                    'file_name' => $fileName,
-                    'hash' => $hash,
-                ];
-            }
+        if ($installedMods->isEmpty()) {
+            return [];
         }
 
-        return $result;
+        // Create cache key based on file count and names only (not modification times)
+        // This ensures cache isn't invalidated just because a timestamp changed
+        $fileNames = $installedMods->pluck('name')->sort()->implode(',');
+        $cacheKey = "project_update_status:{$server->uuid}:$folder:" . md5($fileNames);
+
+        return cache()->remember($cacheKey, now()->addMinutes(5), function () use ($server, $fileRepository, $projectType, $installedMods, $folder) {
+            // Convert to format expected by getFileHashesParallel
+            $files = $installedMods->keyBy('name')->toArray();
+
+            // Use parallel fetching for speed
+            $fileHashes = $this->getFileHashesParallel($server, $fileRepository, $folder, $files);
+            $fileHashes = array_filter($fileHashes, fn ($hash) => !empty($hash));
+
+            if (empty($fileHashes)) {
+                return [];
+            }
+
+            $hashValues = array_values($fileHashes);
+
+            // Get current version info for all installed files
+            $currentVersions = $this->identifyModsByHash($hashValues);
+
+            // Only check for updates if we have identified mods
+            $updates = [];
+            if (!empty($currentVersions)) {
+                $identifiedHashes = array_keys($currentVersions);
+                $updates = $this->checkForUpdates($identifiedHashes, $server, $projectType);
+            }
+
+            $result = [];
+
+            foreach ($fileHashes as $fileName => $hash) {
+                $currentVersion = $currentVersions[$hash] ?? null;
+                $latestVersion = $updates[$hash] ?? null;
+
+                if ($currentVersion && isset($currentVersion['project_id'])) {
+                    $projectId = $currentVersion['project_id'];
+                    $hasUpdate = false;
+
+                    if ($latestVersion) {
+                        $hasUpdate = ($currentVersion['id'] ?? null) !== ($latestVersion['id'] ?? null);
+                    }
+
+                    $result[$projectId] = [
+                        'installed' => true,
+                        'has_update' => $hasUpdate,
+                        'installed_version' => $currentVersion,
+                        'latest_version' => $latestVersion,
+                        'file_name' => $fileName,
+                        'hash' => $hash,
+                    ];
+                }
+            }
+
+            return $result;
+        });
     }
 
     /**
@@ -449,5 +619,263 @@ class MinecraftModrinthService
                 'hash' => $hash,
             ]);
         });
+    }
+
+    /**
+     * Get installed mods with basic info only (no hash computation or API calls)
+     * Used for fast initial page load
+     * @return Collection<int, array<string, mixed>>
+     */
+    public function getInstalledModsBasic(Server $server, DaemonFileRepository $fileRepository, ?ModrinthProjectType $projectType = null): Collection
+    {
+        return $this->getInstalledMods($server, $fileRepository, $projectType)
+            ->map(fn ($mod) => array_merge($mod, [
+                'loading' => true,
+                'modrinth_info' => null,
+                'project_info' => null,
+                'has_update' => false,
+                'latest_version' => null,
+                'hash' => null,
+            ]));
+    }
+
+    /**
+     * Get Modrinth info for a specific batch of files
+     * Used for lazy loading in batches
+     * @param array<string> $fileNames
+     * @return array<string, array<string, mixed>>
+     */
+    public function getModInfoForFiles(Server $server, DaemonFileRepository $fileRepository, array $fileNames, ?ModrinthProjectType $projectType = null): array
+    {
+        $projectType = $projectType ?? ModrinthProjectType::fromServer($server);
+        $folder = $projectType?->getFolder($server);
+
+        if (!$folder || empty($fileNames)) {
+            return [];
+        }
+
+        $allMods = $this->getInstalledMods($server, $fileRepository, $projectType);
+
+        // Compute hashes for the requested files only
+        $hashes = [];
+        foreach ($allMods as $mod) {
+            if (in_array($mod['name'], $fileNames, true)) {
+                $hash = $this->getFileHash($server, $fileRepository, $folder, $mod['name'], $mod['modified_at']);
+                if ($hash) {
+                    $hashes[$mod['name']] = $hash;
+                }
+            }
+        }
+
+        if (empty($hashes)) {
+            // Return basic info without Modrinth data
+            $result = [];
+            foreach ($fileNames as $fileName) {
+                $result[$fileName] = [
+                    'modrinth_info' => null,
+                    'project_info' => null,
+                    'has_update' => false,
+                    'latest_version' => null,
+                    'hash' => null,
+                    'loading' => false,
+                ];
+            }
+            return $result;
+        }
+
+        // Get Modrinth info for the hashes
+        $hashValues = array_values($hashes);
+        $currentVersions = $this->identifyModsByHash($hashValues);
+
+        // Only check for updates and fetch projects if we found some mods
+        $updates = [];
+        $projects = [];
+
+        if (!empty($currentVersions)) {
+            // Only check updates for hashes that were actually identified
+            $identifiedHashes = array_keys($currentVersions);
+            $updates = $this->checkForUpdates($identifiedHashes, $server, $projectType);
+
+            // Collect project IDs
+            $projectIds = [];
+            foreach ($currentVersions as $version) {
+                if (isset($version['project_id'])) {
+                    $projectIds[] = $version['project_id'];
+                }
+            }
+
+            // Fetch project details only if we have project IDs
+            if (!empty($projectIds)) {
+                $projects = $this->getProjectsById($projectIds);
+            }
+        }
+
+        // Build result
+        $result = [];
+        foreach ($fileNames as $fileName) {
+            $hash = $hashes[$fileName] ?? null;
+            $currentVersion = $hash ? ($currentVersions[$hash] ?? null) : null;
+            $latestVersion = $hash ? ($updates[$hash] ?? null) : null;
+            $projectInfo = null;
+
+            if ($currentVersion && isset($currentVersion['project_id'])) {
+                $projectInfo = $projects[$currentVersion['project_id']] ?? null;
+            }
+
+            $hasUpdate = false;
+            if ($currentVersion && $latestVersion) {
+                $hasUpdate = ($currentVersion['id'] ?? null) !== ($latestVersion['id'] ?? null);
+            }
+
+            $result[$fileName] = [
+                'modrinth_info' => $currentVersion,
+                'project_info' => $projectInfo,
+                'has_update' => $hasUpdate,
+                'latest_version' => $latestVersion,
+                'hash' => $hash,
+                'loading' => false,
+            ];
+        }
+
+        return $result;
+    }
+
+    /**
+     * Get Modrinth info for files using cached mod data (avoids re-reading directory)
+     * Uses parallel file fetching for better performance
+     * @param array<string> $fileNames
+     * @param array<string, array<string, mixed>> $cachedModData Mod data keyed by filename
+     * @return array<string, array<string, mixed>>
+     */
+    public function getModInfoForFilesCached(Server $server, DaemonFileRepository $fileRepository, array $fileNames, array $cachedModData, ?ModrinthProjectType $projectType = null): array
+    {
+        $projectType = $projectType ?? ModrinthProjectType::fromServer($server);
+        $folder = $projectType?->getFolder($server);
+
+        if (!$folder || empty($fileNames)) {
+            return [];
+        }
+
+        $result = [];
+        $filesToProcess = [];
+
+        // Check cache first for each file
+        foreach ($fileNames as $fileName) {
+            if (!isset($cachedModData[$fileName])) {
+                $result[$fileName] = [
+                    'modrinth_info' => null,
+                    'project_info' => null,
+                    'has_update' => false,
+                    'latest_version' => null,
+                    'hash' => null,
+                    'loading' => false,
+                ];
+                continue;
+            }
+
+            $mod = $cachedModData[$fileName];
+            $cacheKey = "mod_info:{$server->uuid}:$folder/{$fileName}:{$mod['modified_at']}";
+
+            $cachedInfo = cache()->get($cacheKey);
+            if ($cachedInfo !== null) {
+                // Use cached Modrinth info
+                $result[$fileName] = $cachedInfo;
+            } else {
+                // Need to fetch info for this file
+                $filesToProcess[$fileName] = $cachedModData[$fileName];
+            }
+        }
+
+        // If all files were cached, return early
+        if (empty($filesToProcess)) {
+            return $result;
+        }
+
+        // Compute hashes for the files that need processing - IN PARALLEL
+        $hashes = $this->getFileHashesParallel($server, $fileRepository, $folder, $filesToProcess);
+
+        // Filter out null/empty hashes
+        $validHashes = array_filter($hashes, fn ($hash) => !empty($hash));
+
+        if (empty($validHashes)) {
+            // Return basic info without Modrinth data for remaining files
+            foreach ($filesToProcess as $fileName => $mod) {
+                $info = [
+                    'modrinth_info' => null,
+                    'project_info' => null,
+                    'has_update' => false,
+                    'latest_version' => null,
+                    'hash' => null,
+                    'loading' => false,
+                ];
+                $result[$fileName] = $info;
+
+                // Cache this result
+                $cacheKey = "mod_info:{$server->uuid}:$folder/{$fileName}:{$mod['modified_at']}";
+                cache()->put($cacheKey, $info, now()->addHours(6));
+            }
+            return $result;
+        }
+
+        // Get Modrinth info for the hashes
+        $hashValues = array_values($validHashes);
+        $currentVersions = $this->identifyModsByHash($hashValues);
+
+        // Only check for updates and fetch projects if we found some mods
+        $updates = [];
+        $projects = [];
+
+        if (!empty($currentVersions)) {
+            // Only check updates for hashes that were actually identified
+            $identifiedHashes = array_keys($currentVersions);
+            $updates = $this->checkForUpdates($identifiedHashes, $server, $projectType);
+
+            // Collect project IDs
+            $projectIds = [];
+            foreach ($currentVersions as $version) {
+                if (isset($version['project_id'])) {
+                    $projectIds[] = $version['project_id'];
+                }
+            }
+
+            // Fetch project details only if we have project IDs
+            if (!empty($projectIds)) {
+                $projects = $this->getProjectsById($projectIds);
+            }
+        }
+
+        // Build result for files that were processed
+        foreach ($filesToProcess as $fileName => $mod) {
+            $hash = $hashes[$fileName] ?? null;
+            $currentVersion = $hash ? ($currentVersions[$hash] ?? null) : null;
+            $latestVersion = $hash ? ($updates[$hash] ?? null) : null;
+            $projectInfo = null;
+
+            if ($currentVersion && isset($currentVersion['project_id'])) {
+                $projectInfo = $projects[$currentVersion['project_id']] ?? null;
+            }
+
+            $hasUpdate = false;
+            if ($currentVersion && $latestVersion) {
+                $hasUpdate = ($currentVersion['id'] ?? null) !== ($latestVersion['id'] ?? null);
+            }
+
+            $info = [
+                'modrinth_info' => $currentVersion,
+                'project_info' => $projectInfo,
+                'has_update' => $hasUpdate,
+                'latest_version' => $latestVersion,
+                'hash' => $hash,
+                'loading' => false,
+            ];
+
+            $result[$fileName] = $info;
+
+            // Cache this result (6 hours for update checks)
+            $cacheKey = "mod_info:{$server->uuid}:$folder/{$fileName}:{$mod['modified_at']}";
+            cache()->put($cacheKey, $info, now()->addHours(6));
+        }
+
+        return $result;
     }
 }

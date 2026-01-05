@@ -29,6 +29,7 @@ use Filament\Tables\Contracts\HasTable;
 use Filament\Tables\Table;
 use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Carbon;
+use Livewire\Attributes\Computed;
 use Livewire\Attributes\Url;
 
 class MinecraftModrinthProjectPage extends Page implements HasTable
@@ -48,6 +49,14 @@ class MinecraftModrinthProjectPage extends Page implements HasTable
     protected ?array $installedFiles = null;
 
     protected ?array $projectUpdateStatus = null;
+
+    // Lazy loading properties for installed mods
+    public array $modsInfoCache = [];
+    public array $pendingFiles = [];
+    public array $modsBasicData = [];  // Cached mod data to avoid re-reading directory
+    public bool $isLoadingMods = false;
+    public int $loadedCount = 0;
+    public int $totalCount = 0;
 
     public static function canAccess(): bool
     {
@@ -85,6 +94,8 @@ class MinecraftModrinthProjectPage extends Page implements HasTable
      */
     public function switchToModrinth(): void
     {
+        // Stop any ongoing loading before switching
+        $this->resetModsLoading();
         $this->redirect(static::getUrl(['view' => 'modrinth']));
     }
 
@@ -93,7 +104,133 @@ class MinecraftModrinthProjectPage extends Page implements HasTable
      */
     public function switchToInstalled(): void
     {
+        // Reset loading state to start fresh
+        $this->resetModsLoading();
         $this->redirect(static::getUrl(['view' => 'installed']));
+    }
+
+    /**
+     * Load next batch of mod info (called by wire:poll)
+     */
+    public function loadModsBatch(): void
+    {
+        // Only run on installed view
+        if ($this->currentView !== 'installed') {
+            return;
+        }
+
+        // Skip if already loading
+        if ($this->isLoadingMods) {
+            return;
+        }
+
+        /** @var Server $server */
+        $server = Filament::getTenant();
+        $fileRepository = app(DaemonFileRepository::class);
+
+        // Initialize pending files if not yet done (only read directory once!)
+        if (empty($this->pendingFiles) && empty($this->modsInfoCache)) {
+            // Cache the basic mod data to avoid re-reading directory
+            if (empty($this->modsBasicData)) {
+                $installedMods = MinecraftModrinth::getInstalledMods($server, $fileRepository);
+                if ($installedMods->isEmpty()) {
+                    return;
+                }
+                $this->modsBasicData = $installedMods->keyBy('name')->toArray();
+            }
+
+            // Pre-load cached mod info from Laravel cache
+            $this->preloadCachedModInfo($server);
+
+            // Only add to pending the files that are NOT already cached
+            $this->pendingFiles = array_diff(array_keys($this->modsBasicData), array_keys($this->modsInfoCache));
+            $this->totalCount = count($this->modsBasicData);
+            $this->loadedCount = count($this->modsInfoCache);
+        }
+
+        // Nothing left to load
+        if (empty($this->pendingFiles)) {
+            return;
+        }
+
+        $this->isLoadingMods = true;
+
+        // Load 25 mods at a time (uses parallel fetching for speed)
+        $batch = array_splice($this->pendingFiles, 0, 25);
+
+        try {
+            // Pass cached mod data to avoid re-reading directory
+            $infos = MinecraftModrinth::getModInfoForFilesCached($server, $fileRepository, $batch, $this->modsBasicData);
+            $this->modsInfoCache = array_merge($this->modsInfoCache, $infos);
+            $this->loadedCount += count($batch);
+
+            // If all files are loaded, save to cache for next visit
+            if (empty($this->pendingFiles)) {
+                $this->saveCachedModInfo($server);
+            }
+        } catch (Exception $exception) {
+            report($exception);
+        }
+
+        $this->isLoadingMods = false;
+    }
+
+    /**
+     * Pre-load mod info from Laravel cache into Livewire state
+     * Uses a single cache entry for all mods (faster and more reliable)
+     */
+    protected function preloadCachedModInfo(Server $server): void
+    {
+        $projectType = ModrinthProjectType::fromServer($server);
+        $folder = $projectType?->getFolder($server);
+
+        if (!$folder) {
+            return;
+        }
+
+        // Simple cache key: server + folder + version (version invalidates on download/delete)
+        $version = MinecraftModrinth::getCacheVersion($server);
+        $cacheKey = "all_mods_info:{$server->uuid}:$folder:v{$version}";
+
+        $cachedAllInfo = cache()->get($cacheKey);
+        if ($cachedAllInfo !== null && is_array($cachedAllInfo)) {
+            // Only use cached entries that match current files
+            $currentFileNames = array_keys($this->modsBasicData);
+            $this->modsInfoCache = array_intersect_key($cachedAllInfo, array_flip($currentFileNames));
+        }
+    }
+
+    /**
+     * Save all mod info to cache after loading completes
+     */
+    protected function saveCachedModInfo(Server $server): void
+    {
+        $projectType = ModrinthProjectType::fromServer($server);
+        $folder = $projectType?->getFolder($server);
+
+        if (!$folder || empty($this->modsInfoCache)) {
+            return;
+        }
+
+        // Simple cache key: server + folder + version
+        $version = MinecraftModrinth::getCacheVersion($server);
+        $cacheKey = "all_mods_info:{$server->uuid}:$folder:v{$version}";
+
+        // Cache for 6 hours
+        cache()->put($cacheKey, $this->modsInfoCache, now()->addHours(6));
+    }
+
+    /**
+     * Reset lazy loading state
+     */
+    public function resetModsLoading(): void
+    {
+        $this->modsInfoCache = [];
+        $this->pendingFiles = [];
+        $this->modsBasicData = [];
+        $this->loadedCount = 0;
+        $this->totalCount = 0;
+        $this->isLoadingMods = false;
     }
 
     /**
@@ -220,10 +357,62 @@ class MinecraftModrinthProjectPage extends Page implements HasTable
                 $server = Filament::getTenant();
 
                 if ($isInstalled) {
-                    // Return installed mods with Modrinth info
+                    // Use cached data if available, otherwise read from directory
                     $fileRepository = app(DaemonFileRepository::class);
-                    $fileHashes = MinecraftModrinth::getInstalledFileHashes($server, $fileRepository);
-                    $installedMods = MinecraftModrinth::getInstalledModsWithInfo($server, $fileRepository, $fileHashes);
+
+                    if (!empty($this->modsBasicData)) {
+                        // Use cached data
+                        $installedMods = collect($this->modsBasicData);
+                    } else {
+                        // Initial load - read file list
+                        $installedMods = MinecraftModrinth::getInstalledMods($server, $fileRepository);
+
+                        // Cache for later use
+                        if ($installedMods->isNotEmpty()) {
+                            $this->modsBasicData = $installedMods->keyBy('name')->toArray();
+                            $installedMods = collect($this->modsBasicData);
+                        }
+                    }
+
+                    // Initialize lazy loading if not yet done
+                    if (empty($this->pendingFiles) && empty($this->modsInfoCache) && $installedMods->isNotEmpty()) {
+                        // Load from cache FIRST before setting pendingFiles
+                        $this->preloadCachedModInfo($server);
+
+                        // Only set pendingFiles for files NOT in cache
+                        $this->pendingFiles = array_diff(array_keys($this->modsBasicData), array_keys($this->modsInfoCache));
+                        $this->totalCount = count($this->modsBasicData);
+                        $this->loadedCount = count($this->modsInfoCache);
+                    }
+
+                    // Merge with cached Modrinth info, add defaults for unloaded records
+                    $installedMods = $installedMods->map(function ($mod) {
+                        if (isset($this->modsInfoCache[$mod['name']])) {
+                            return array_merge($mod, $this->modsInfoCache[$mod['name']]);
+                        }
+                        // Add default values for records not yet enriched
+                        return array_merge($mod, [
+                            'modrinth_info' => null,
+                            'project_info' => null,
+                            'has_update' => false,
+                            'latest_version' => null,
+                            'hash' => null,
+                            'loading' => true,
+                        ]);
+                    });
+
+                    // Filter by search term
+                    if ($search) {
+                        $searchLower = strtolower($search);
+                        $installedMods = $installedMods->filter(function ($mod) use ($searchLower) {
+                            $title = strtolower($mod['project_info']['title'] ?? $mod['name'] ?? '');
+                            $description = strtolower($mod['project_info']['description'] ?? '');
+                            $name = strtolower($mod['name'] ?? '');
+                            return str_contains($title, $searchLower)
+                                || str_contains($description, $searchLower)
+                                || str_contains($name, $searchLower);
+                        });
+                    }
 
                     // Simple pagination
                     $offset = ($page - 1) * 20;
@@ -314,8 +503,8 @@ class MinecraftModrinthProjectPage extends Page implements HasTable
                 ->label(trans('minecraft-modrinth::strings.table.columns.version'))
                 ->badge()
                 ->getStateUsing(fn (array $record) => $record['modrinth_info']['version_number'] ?? trans('minecraft-modrinth::strings.page.unknown'))
-                ->color(fn (array $record) => $record['has_update'] ? 'warning' : 'success')
-                ->icon(fn (array $record) => $record['has_update'] ? 'tabler-refresh' : 'tabler-check'),
+                ->color(fn (array $record) => ($record['has_update'] ?? false) ? 'warning' : 'success')
+                ->icon(fn (array $record) => ($record['has_update'] ?? false) ? 'tabler-refresh' : 'tabler-check'),
         ];
     }
 
@@ -399,7 +588,8 @@ class MinecraftModrinthProjectPage extends Page implements HasTable
                         ->state($versionData['changelog']),
                 ])
                 ->headerActions([
-                    Action::make('download')
+                    Action::make('download_' . $versionData['id'])
+                        ->label(trans('minecraft-modrinth::strings.actions.download'))
                         ->visible(!is_null($primaryFile))
                         ->action(function (DaemonFileRepository $fileRepository) use ($server, $versionData, $primaryFile) {
                             try {
@@ -408,6 +598,7 @@ class MinecraftModrinthProjectPage extends Page implements HasTable
                                 // Clear cache to refresh update status
                                 $this->projectUpdateStatus = null;
                                 $this->installedFiles = null;
+                                MinecraftModrinth::clearModsCache($server);
 
                                 Notification::make()
                                     ->title(trans('minecraft-modrinth::strings.notifications.download_started'))
@@ -423,7 +614,8 @@ class MinecraftModrinthProjectPage extends Page implements HasTable
                                     ->danger()
                                     ->send();
                             }
-                        }),
+                        })
+                        ->after(fn () => $this->redirect(static::getUrl(['view' => $this->currentView]))),
                 ]);
         }
 
@@ -441,7 +633,7 @@ class MinecraftModrinthProjectPage extends Page implements HasTable
                 ->label(trans('minecraft-modrinth::strings.actions.update'))
                 ->color('warning')
                 ->icon('tabler-refresh')
-                ->visible(fn (array $record) => $record['has_update'] && isset($record['latest_version']))
+                ->visible(fn (array $record) => ($record['has_update'] ?? false) && isset($record['latest_version']))
                 ->requiresConfirmation()
                 ->action(function (array $record, DaemonFileRepository $fileRepository) use ($server) {
                     try {
@@ -471,6 +663,7 @@ class MinecraftModrinthProjectPage extends Page implements HasTable
                         // Clear cache
                         $this->projectUpdateStatus = null;
                         $this->installedFiles = null;
+                        MinecraftModrinth::clearModsCache($server);
 
                         Notification::make()
                             ->title(trans('minecraft-modrinth::strings.notifications.download_started'))
@@ -512,6 +705,8 @@ class MinecraftModrinthProjectPage extends Page implements HasTable
                         // Clear cache
                         $this->installedFiles = null;
                         $this->projectUpdateStatus = null;
+                        MinecraftModrinth::clearModsCache($server);
+                        $this->resetModsLoading();
 
                         Notification::make()
                             ->title(trans('minecraft-modrinth::strings.notifications.delete_success'))
@@ -580,7 +775,8 @@ class MinecraftModrinthProjectPage extends Page implements HasTable
                         ->state($versionData['changelog']),
                 ])
                 ->headerActions([
-                    Action::make('download')
+                    Action::make('download_' . $versionData['id'])
+                        ->label(trans('minecraft-modrinth::strings.actions.download'))
                         ->visible(!is_null($primaryFile))
                         ->action(function (DaemonFileRepository $fileRepository) use ($server, $versionData, $primaryFile, $record) {
                             try {
@@ -595,6 +791,7 @@ class MinecraftModrinthProjectPage extends Page implements HasTable
                                 // Clear cache to refresh update status
                                 $this->projectUpdateStatus = null;
                                 $this->installedFiles = null;
+                                MinecraftModrinth::clearModsCache($server);
 
                                 Notification::make()
                                     ->title(trans('minecraft-modrinth::strings.notifications.download_started'))
@@ -610,7 +807,8 @@ class MinecraftModrinthProjectPage extends Page implements HasTable
                                     ->danger()
                                     ->send();
                             }
-                        }),
+                        })
+                        ->after(fn () => $this->redirect(static::getUrl(['view' => $this->currentView]))),
                 ]);
         }
 
@@ -639,39 +837,31 @@ class MinecraftModrinthProjectPage extends Page implements HasTable
 
         return $schema
             ->components([
-                Grid::make(3)
-                    ->schema([
-                        TextEntry::make('minecraft_version')
-                            ->label(trans('minecraft-modrinth::strings.page.minecraft_version'))
-                            ->state(fn () => MinecraftModrinth::getMinecraftVersion($server) ?? trans('minecraft-modrinth::strings.page.unknown'))
-                            ->badge(),
-                        TextEntry::make('loader')
-                            ->label(trans('minecraft-modrinth::strings.page.loader'))
-                            ->state(fn () => MinecraftLoader::fromServer($server)?->getLabel() ?? trans('minecraft-modrinth::strings.page.unknown'))
-                            ->badge(),
-                        TextEntry::make('installed')
-                            ->label(fn () => trans('minecraft-modrinth::strings.page.installed', ['type' => ModrinthProjectType::fromServer($server)->getLabel()]))
-                            ->state(function (DaemonFileRepository $fileRepository) use ($server) {
-                                try {
-                                    $files = $fileRepository->setServer($server)->getDirectory(ModrinthProjectType::fromServer($server)->getFolder($server));
+                \Filament\Schemas\Components\View::make('minecraft-modrinth::components.server-info')
+                    ->viewData([
+                        'minecraft_version' => MinecraftModrinth::getMinecraftVersion($server) ?? trans('minecraft-modrinth::strings.page.unknown'),
+                        'loader' => MinecraftLoader::fromServer($server)?->getLabel() ?? trans('minecraft-modrinth::strings.page.unknown'),
+                        'installed_count' => (function () use ($server) {
+                            try {
+                                $fileRepository = app(DaemonFileRepository::class);
+                                $files = $fileRepository->setServer($server)->getDirectory(ModrinthProjectType::fromServer($server)->getFolder($server));
 
-                                    if (isset($files['error'])) {
-                                        if (str_contains($files['error'], 'directory was not found')) {
-                                            return 0;
-                                        }
-                                        throw new Exception($files['error']);
+                                if (isset($files['error'])) {
+                                    if (str_contains($files['error'], 'directory was not found')) {
+                                        return 0;
                                     }
-
-                                    return collect($files)
-                                        ->filter(fn ($file) => $file['mime'] === 'application/jar' || str($file['name'])->lower()->endsWith('.jar'))
-                                        ->count();
-                                } catch (Exception $exception) {
-                                    report($exception);
-
                                     return trans('minecraft-modrinth::strings.page.unknown');
                                 }
-                            })
-                            ->badge(),
+
+                                return collect($files)
+                                    ->filter(fn ($file) => $file['mime'] === 'application/jar' || str($file['name'])->lower()->endsWith('.jar'))
+                                    ->count();
+                            } catch (Exception $exception) {
+                                report($exception);
+                                return trans('minecraft-modrinth::strings.page.unknown');
+                            }
+                        })(),
+                        'installed_label' => trans('minecraft-modrinth::strings.page.installed', ['type' => ModrinthProjectType::fromServer($server)->getLabel()]),
                     ]),
                 Tabs::make('view_tabs')
                     ->tabs([
@@ -686,6 +876,16 @@ class MinecraftModrinthProjectPage extends Page implements HasTable
                     ])
                     ->contained(false)
                     ->activeTab(fn () => $this->currentView === 'installed' ? 2 : 1),
+                \Filament\Schemas\Components\View::make('minecraft-modrinth::components.loading-indicator')
+                    ->viewData([
+                        'loaded' => $this->loadedCount,
+                        'total' => $this->totalCount,
+                        // is_loading: true only if there are pending files to process
+                        // Don't show if cache was loaded (modsInfoCache not empty) and no pending files
+                        'is_loading' => $this->currentView === 'installed' && !empty($this->pendingFiles),
+                        // show_indicator: only show visual if >30% need processing
+                        'show_indicator' => $this->totalCount > 0 && count($this->pendingFiles) > ($this->totalCount * 0.3),
+                    ]),
                 EmbeddedTable::make(),
             ]);
     }

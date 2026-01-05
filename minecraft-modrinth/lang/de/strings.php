@@ -17,6 +17,7 @@ return [
         'loader' => 'Plattform',
         'installed' => 'Installierte :type',
         'unknown' => 'Unbekannt',
+        'loading_mods' => 'Lade Mod-Infos... :loaded/:total',
     ],
 
     'tabs' => [

@@ -49,6 +49,14 @@ class MinecraftDatapackPage extends Page implements HasTable
 
     protected ModrinthProjectType $projectType = ModrinthProjectType::Datapack;
 
+    // Lazy loading properties for installed datapacks
+    public array $modsInfoCache = [];
+    public array $pendingFiles = [];
+    public array $modsBasicData = [];  // Cached mod data to avoid re-reading directory
+    public bool $isLoadingMods = false;
+    public int $loadedCount = 0;
+    public int $totalCount = 0;
+
     public static function canAccess(): bool
     {
         /** @var Server $server */
@@ -89,6 +97,8 @@ class MinecraftDatapackPage extends Page implements HasTable
      */
     public function switchToModrinth(): void
     {
+        // Stop any ongoing loading before switching
+        $this->resetModsLoading();
         $this->redirect(static::getUrl(['view' => 'modrinth']));
     }
 
@@ -97,7 +107,131 @@ class MinecraftDatapackPage extends Page implements HasTable
      */
     public function switchToInstalled(): void
     {
+        // Reset loading state to start fresh
+        $this->resetModsLoading();
         $this->redirect(static::getUrl(['view' => 'installed']));
+    }
+
+    /**
+     * Load next batch of datapack info (called by Alpine.js polling)
+     */
+    public function loadModsBatch(): void
+    {
+        // Only run on installed view
+        if ($this->currentView !== 'installed') {
+            return;
+        }
+
+        // Skip if already loading
+        if ($this->isLoadingMods) {
+            return;
+        }
+
+        /** @var Server $server */
+        $server = Filament::getTenant();
+        $fileRepository = app(DaemonFileRepository::class);
+
+        // Initialize pending files if not yet done (only read directory once!)
+        if (empty($this->pendingFiles) && empty($this->modsInfoCache)) {
+            // Cache the mod data to avoid re-reading the directory for each batch
+            if (empty($this->modsBasicData)) {
+                $installedDatapacks = MinecraftModrinth::getInstalledMods($server, $fileRepository, $this->projectType);
+                if ($installedDatapacks->isEmpty()) {
+                    return;
+                }
+                $this->modsBasicData = $installedDatapacks->keyBy('name')->toArray();
+            }
+
+            // Pre-load cached mod info from Laravel cache
+            $this->preloadCachedModInfo($server);
+
+            // Only add to pending the files that are NOT already cached
+            $this->pendingFiles = array_diff(array_keys($this->modsBasicData), array_keys($this->modsInfoCache));
+            $this->totalCount = count($this->modsBasicData);
+            $this->loadedCount = count($this->modsInfoCache);
+        }
+
+        // Nothing left to load
+        if (empty($this->pendingFiles)) {
+            return;
+        }
+
+        $this->isLoadingMods = true;
+
+        // Load 25 datapacks at a time (uses parallel fetching for speed)
+        $batch = array_splice($this->pendingFiles, 0, 25);
+
+        try {
+            // Use cached mod data to avoid re-reading directory for each batch
+            $infos = MinecraftModrinth::getModInfoForFilesCached($server, $fileRepository, $batch, $this->modsBasicData, $this->projectType);
+            $this->modsInfoCache = array_merge($this->modsInfoCache, $infos);
+            $this->loadedCount += count($batch);
+
+            // If all files are loaded, save to cache for next visit
+            if (empty($this->pendingFiles)) {
+                $this->saveCachedModInfo($server);
+            }
+        } catch (Exception $exception) {
+            report($exception);
+        }
+
+        $this->isLoadingMods = false;
+    }
+
+    /**
+     * Pre-load mod info from Laravel cache into Livewire state
+     * Uses a single cache entry for all mods (faster and more reliable)
+     */
+    protected function preloadCachedModInfo(Server $server): void
+    {
+        $folder = $this->projectType->getFolder($server);
+
+        if (!$folder) {
+            return;
+        }
+
+        // Simple cache key: server + folder + version (version invalidates on download/delete)
+        $version = MinecraftModrinth::getCacheVersion($server, $this->projectType);
+        $cacheKey = "all_mods_info:{$server->uuid}:$folder:v{$version}";
+
+        $cachedAllInfo = cache()->get($cacheKey);
+        if ($cachedAllInfo !== null && is_array($cachedAllInfo)) {
+            // Only use cached entries that match current files
+            $currentFileNames = array_keys($this->modsBasicData);
+            $this->modsInfoCache = array_intersect_key($cachedAllInfo, array_flip($currentFileNames));
+        }
+    }
+
+    /**
+     * Save all mod info to cache after loading completes
+     */
+    protected function saveCachedModInfo(Server $server): void
+    {
+        $folder = $this->projectType->getFolder($server);
+
+        if (!$folder || empty($this->modsInfoCache)) {
+            return;
+        }
+
+        // Simple cache key: server + folder + version
+        $version = MinecraftModrinth::getCacheVersion($server, $this->projectType);
+        $cacheKey = "all_mods_info:{$server->uuid}:$folder:v{$version}";
+
+        // Cache for 6 hours
+        cache()->put($cacheKey, $this->modsInfoCache, now()->addHours(6));
+    }
+
+    /**
+     * Reset lazy loading state
+     */
+    public function resetModsLoading(): void
+    {
+        $this->modsInfoCache = [];
+        $this->pendingFiles = [];
+        $this->modsBasicData = [];
+        $this->loadedCount = 0;
+        $this->totalCount = 0;
+        $this->isLoadingMods = false;
     }
 
     /**
@@ -220,10 +354,62 @@ class MinecraftDatapackPage extends Page implements HasTable
                 $server = Filament::getTenant();
 
                 if ($isInstalled) {
-                    // Return installed datapacks with Modrinth info
+                    // Use cached data if available, otherwise read from directory
                     $fileRepository = app(DaemonFileRepository::class);
-                    $fileHashes = MinecraftModrinth::getInstalledFileHashes($server, $fileRepository, $this->projectType);
-                    $installedDatapacks = MinecraftModrinth::getInstalledModsWithInfo($server, $fileRepository, $fileHashes, $this->projectType);
+
+                    if (!empty($this->modsBasicData)) {
+                        // Use cached data
+                        $installedDatapacks = collect($this->modsBasicData);
+                    } else {
+                        // Initial load - read file list
+                        $installedDatapacks = MinecraftModrinth::getInstalledMods($server, $fileRepository, $this->projectType);
+
+                        // Cache for later use
+                        if ($installedDatapacks->isNotEmpty()) {
+                            $this->modsBasicData = $installedDatapacks->keyBy('name')->toArray();
+                            $installedDatapacks = collect($this->modsBasicData);
+                        }
+                    }
+
+                    // Initialize lazy loading if not yet done
+                    if (empty($this->pendingFiles) && empty($this->modsInfoCache) && $installedDatapacks->isNotEmpty()) {
+                        // Load from cache FIRST before setting pendingFiles
+                        $this->preloadCachedModInfo($server);
+
+                        // Only set pendingFiles for files NOT in cache
+                        $this->pendingFiles = array_diff(array_keys($this->modsBasicData), array_keys($this->modsInfoCache));
+                        $this->totalCount = count($this->modsBasicData);
+                        $this->loadedCount = count($this->modsInfoCache);
+                    }
+
+                    // Merge with cached Modrinth info, add defaults for unloaded records
+                    $installedDatapacks = $installedDatapacks->map(function ($item) {
+                        if (isset($this->modsInfoCache[$item['name']])) {
+                            return array_merge($item, $this->modsInfoCache[$item['name']]);
+                        }
+                        // Add default values for records not yet enriched
+                        return array_merge($item, [
+                            'modrinth_info' => null,
+                            'project_info' => null,
+                            'has_update' => false,
+                            'latest_version' => null,
+                            'hash' => null,
+                            'loading' => true,
+                        ]);
+                    });
+
+                    // Filter by search term
+                    if ($search) {
+                        $searchLower = strtolower($search);
+                        $installedDatapacks = $installedDatapacks->filter(function ($item) use ($searchLower) {
+                            $title = strtolower($item['project_info']['title'] ?? $item['name'] ?? '');
+                            $description = strtolower($item['project_info']['description'] ?? '');
+                            $name = strtolower($item['name'] ?? '');
+                            return str_contains($title, $searchLower)
+                                || str_contains($description, $searchLower)
+                                || str_contains($name, $searchLower);
+                        });
+                    }
 
                     // Simple pagination
                     $offset = ($page - 1) * 20;
@@ -314,8 +500,8 @@ class MinecraftDatapackPage extends Page implements HasTable
                 ->label(trans('minecraft-modrinth::strings.table.columns.version'))
                 ->badge()
                 ->getStateUsing(fn (array $record) => $record['modrinth_info']['version_number'] ?? trans('minecraft-modrinth::strings.page.unknown'))
-                ->color(fn (array $record) => $record['has_update'] ? 'warning' : 'success')
-                ->icon(fn (array $record) => $record['has_update'] ? 'tabler-refresh' : 'tabler-check'),
+                ->color(fn (array $record) => ($record['has_update'] ?? false) ? 'warning' : 'success')
+                ->icon(fn (array $record) => ($record['has_update'] ?? false) ? 'tabler-refresh' : 'tabler-check'),
         ];
     }
 
@@ -399,7 +585,8 @@ class MinecraftDatapackPage extends Page implements HasTable
                         ->state($versionData['changelog']),
                 ])
                 ->headerActions([
-                    Action::make('download')
+                    Action::make('download_' . $versionData['id'])
+                        ->label(trans('minecraft-modrinth::strings.actions.download'))
                         ->visible(!is_null($primaryFile))
                         ->action(function (DaemonFileRepository $fileRepository) use ($server, $versionData, $primaryFile) {
                             try {
@@ -409,6 +596,7 @@ class MinecraftDatapackPage extends Page implements HasTable
                                 // Clear cache to refresh update status
                                 $this->projectUpdateStatus = null;
                                 $this->installedFiles = null;
+                                MinecraftModrinth::clearModsCache($server, $this->projectType);
 
                                 Notification::make()
                                     ->title(trans('minecraft-modrinth::strings.notifications.download_started'))
@@ -424,7 +612,8 @@ class MinecraftDatapackPage extends Page implements HasTable
                                     ->danger()
                                     ->send();
                             }
-                        }),
+                        })
+                        ->after(fn () => $this->redirect(static::getUrl(['view' => $this->currentView]))),
                 ]);
         }
 
@@ -442,7 +631,7 @@ class MinecraftDatapackPage extends Page implements HasTable
                 ->label(trans('minecraft-modrinth::strings.actions.update'))
                 ->color('warning')
                 ->icon('tabler-refresh')
-                ->visible(fn (array $record) => $record['has_update'] && isset($record['latest_version']))
+                ->visible(fn (array $record) => ($record['has_update'] ?? false) && isset($record['latest_version']))
                 ->requiresConfirmation()
                 ->action(function (array $record, DaemonFileRepository $fileRepository) use ($server) {
                     try {
@@ -472,6 +661,7 @@ class MinecraftDatapackPage extends Page implements HasTable
                         // Clear cache
                         $this->projectUpdateStatus = null;
                         $this->installedFiles = null;
+                        MinecraftModrinth::clearModsCache($server, $this->projectType);
 
                         Notification::make()
                             ->title(trans('minecraft-modrinth::strings.notifications.download_started'))
@@ -513,6 +703,8 @@ class MinecraftDatapackPage extends Page implements HasTable
                         // Clear cache
                         $this->installedFiles = null;
                         $this->projectUpdateStatus = null;
+                        MinecraftModrinth::clearModsCache($server, $this->projectType);
+                        $this->resetModsLoading();
 
                         Notification::make()
                             ->title(trans('minecraft-modrinth::strings.notifications.delete_success'))
@@ -581,7 +773,8 @@ class MinecraftDatapackPage extends Page implements HasTable
                         ->state($versionData['changelog']),
                 ])
                 ->headerActions([
-                    Action::make('download')
+                    Action::make('download_' . $versionData['id'])
+                        ->label(trans('minecraft-modrinth::strings.actions.download'))
                         ->visible(!is_null($primaryFile))
                         ->action(function (DaemonFileRepository $fileRepository) use ($server, $versionData, $primaryFile, $record) {
                             try {
@@ -596,6 +789,7 @@ class MinecraftDatapackPage extends Page implements HasTable
                                 // Clear cache to refresh update status
                                 $this->projectUpdateStatus = null;
                                 $this->installedFiles = null;
+                                MinecraftModrinth::clearModsCache($server, $this->projectType);
 
                                 Notification::make()
                                     ->title(trans('minecraft-modrinth::strings.notifications.download_started'))
@@ -611,7 +805,8 @@ class MinecraftDatapackPage extends Page implements HasTable
                                     ->danger()
                                     ->send();
                             }
-                        }),
+                        })
+                        ->after(fn () => $this->redirect(static::getUrl(['view' => $this->currentView]))),
                 ]);
         }
 
@@ -640,36 +835,31 @@ class MinecraftDatapackPage extends Page implements HasTable
 
         return $schema
             ->components([
-                Grid::make(2)
-                    ->schema([
-                        TextEntry::make('minecraft_version')
-                            ->label(trans('minecraft-modrinth::strings.page.minecraft_version'))
-                            ->state(fn () => MinecraftModrinth::getMinecraftVersion($server) ?? trans('minecraft-modrinth::strings.page.unknown'))
-                            ->badge(),
-                        TextEntry::make('installed')
-                            ->label(fn () => trans('minecraft-modrinth::strings.page.installed', ['type' => $this->projectType->getLabel()]))
-                            ->state(function (DaemonFileRepository $fileRepository) use ($server) {
-                                try {
-                                    $folder = $this->projectType->getFolder($server);
-                                    $files = $fileRepository->setServer($server)->getDirectory($folder);
+                \Filament\Schemas\Components\View::make('minecraft-modrinth::components.server-info-datapack')
+                    ->viewData([
+                        'minecraft_version' => MinecraftModrinth::getMinecraftVersion($server) ?? trans('minecraft-modrinth::strings.page.unknown'),
+                        'installed_count' => (function () use ($server) {
+                            try {
+                                $fileRepository = app(DaemonFileRepository::class);
+                                $folder = $this->projectType->getFolder($server);
+                                $files = $fileRepository->setServer($server)->getDirectory($folder);
 
-                                    if (isset($files['error'])) {
-                                        if (str_contains($files['error'], 'directory was not found')) {
-                                            return 0;
-                                        }
-                                        throw new Exception($files['error']);
+                                if (isset($files['error'])) {
+                                    if (str_contains($files['error'], 'directory was not found')) {
+                                        return 0;
                                     }
-
-                                    return collect($files)
-                                        ->filter(fn ($file) => str($file['name'])->lower()->endsWith('.zip'))
-                                        ->count();
-                                } catch (Exception $exception) {
-                                    report($exception);
-
                                     return trans('minecraft-modrinth::strings.page.unknown');
                                 }
-                            })
-                            ->badge(),
+
+                                return collect($files)
+                                    ->filter(fn ($file) => str($file['name'])->lower()->endsWith('.zip'))
+                                    ->count();
+                            } catch (Exception $exception) {
+                                report($exception);
+                                return trans('minecraft-modrinth::strings.page.unknown');
+                            }
+                        })(),
+                        'installed_label' => trans('minecraft-modrinth::strings.page.installed', ['type' => $this->projectType->getLabel()]),
                     ]),
                 Tabs::make('view_tabs')
                     ->tabs([
@@ -684,6 +874,16 @@ class MinecraftDatapackPage extends Page implements HasTable
                     ])
                     ->contained(false)
                     ->activeTab(fn () => $this->currentView === 'installed' ? 2 : 1),
+                \Filament\Schemas\Components\View::make('minecraft-modrinth::components.loading-indicator')
+                    ->viewData([
+                        'loaded' => $this->loadedCount,
+                        'total' => $this->totalCount,
+                        // is_loading: true only if there are pending files to process
+                        // Don't show if cache was loaded (modsInfoCache not empty) and no pending files
+                        'is_loading' => $this->currentView === 'installed' && !empty($this->pendingFiles),
+                        // show_indicator: only show visual if >30% need processing
+                        'show_indicator' => $this->totalCount > 0 && count($this->pendingFiles) > ($this->totalCount * 0.3),
+                    ]),
                 EmbeddedTable::make(),
             ]);
     }

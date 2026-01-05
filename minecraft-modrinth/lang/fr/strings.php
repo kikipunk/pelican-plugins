@@ -17,6 +17,7 @@ return [
         'loader' => 'Plateforme',
         'installed' => ':type installés',
         'unknown' => 'Inconnu',
+        'loading_mods' => 'Chargement des infos... :loaded/:total',
     ],
 
     'tabs' => [
