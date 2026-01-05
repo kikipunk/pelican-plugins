@@ -1,0 +1,193 @@
+/* Pelican Waters - Dark Theme (Midnight Lagoon) */
+
+:root {
+    --pw-night-blue: #0B1C2D;
+    --pw-lagoon-dark: #0F3D3E;
+    --pw-cyan-accent: #4FD1C5;
+    --pw-text-light: #E2E8F0;
+    --pw-text-muted: #94A3B8;
+    --pw-water-shadow: rgba(79, 209, 197, 0.08);
+    --pw-water-glow: rgba(79, 209, 197, 0.15);
+    --pw-card-bg: rgba(15, 61, 62, 0.4);
+}
+
+/* Background gradient - deep lagoon at night */
+body {
+    background: linear-gradient(135deg, var(--pw-night-blue) 0%, #0d2438 50%, var(--pw-lagoon-dark) 100%) !important;
+    background-attachment: fixed !important;
+    color: var(--pw-text-light) !important;
+}
+
+/* Transparent elements for cohesive look */
+.fi-topbar {
+    background: rgba(11, 28, 45, 0.85) !important;
+    backdrop-filter: blur(10px) !important;
+    border-bottom: 1px solid rgba(79, 209, 197, 0.15) !important;
+}
+
+.fi-sidebar {
+    background: rgba(11, 28, 45, 0.9) !important;
+    backdrop-filter: blur(8px) !important;
+}
+
+/* Cards and sections - floating effect with subtle glow */
+.fi-section,
+.fi-card,
+.fi-widget {
+    background: var(--pw-card-bg) !important;
+    backdrop-filter: blur(6px) !important;
+    border: 1px solid rgba(79, 209, 197, 0.12) !important;
+    border-radius: 12px !important;
+    box-shadow: 0 4px 15px var(--pw-water-shadow) !important;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
+}
+
+/* Hover effect - gentle glow rise */
+.fi-section:hover,
+.fi-card:hover,
+.fi-widget:hover {
+    transform: translateY(-2px) !important;
+    box-shadow: 0 8px 25px var(--pw-water-shadow), 0 0 20px rgba(79, 209, 197, 0.05) !important;
+    border-color: rgba(79, 209, 197, 0.2) !important;
+}
+
+/* Tables - water reflection separators */
+.fi-ta-content,
+.fi-ta-ctn,
+.fi-ta-table,
+.fi-ta-header,
+.fi-ta-body {
+    background: transparent !important;
+}
+
+.fi-ta-row {
+    border-bottom: 1px solid rgba(79, 209, 197, 0.08) !important;
+    transition: background 0.2s ease !important;
+}
+
+.fi-ta-row:hover {
+    background: rgba(79, 209, 197, 0.06) !important;
+}
+
+/* Buttons - cyan accent glow */
+.fi-btn-primary {
+    background: linear-gradient(135deg, var(--pw-cyan-accent), #38B2AC) !important;
+    box-shadow: 0 2px 8px rgba(79, 209, 197, 0.3) !important;
+    transition: all 0.3s ease !important;
+}
+
+.fi-btn-primary:hover {
+    box-shadow: 0 4px 20px rgba(79, 209, 197, 0.4), 0 0 30px rgba(79, 209, 197, 0.15) !important;
+    transform: translateY(-1px) !important;
+}
+
+/* Input fields */
+.fi-input,
+.fi-select,
+.fi-textarea {
+    background: rgba(11, 28, 45, 0.6) !important;
+    border-color: rgba(79, 209, 197, 0.2) !important;
+    color: var(--pw-text-light) !important;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease !important;
+}
+
+.fi-input:focus,
+.fi-select:focus,
+.fi-textarea:focus {
+    border-color: var(--pw-cyan-accent) !important;
+    box-shadow: 0 0 0 3px rgba(79, 209, 197, 0.15) !important;
+}
+
+.fi-input::placeholder,
+.fi-textarea::placeholder {
+    color: var(--pw-text-muted) !important;
+}
+
+/* Navigation items */
+.fi-sidebar-item {
+    border-radius: 8px !important;
+    transition: all 0.2s ease !important;
+}
+
+.fi-sidebar-item:hover {
+    background: rgba(79, 209, 197, 0.1) !important;
+}
+
+.fi-sidebar-item-active {
+    background: rgba(79, 209, 197, 0.15) !important;
+    border-left: 3px solid var(--pw-cyan-accent) !important;
+}
+
+/* Active elements glow */
+.fi-sidebar-item-active .fi-sidebar-item-icon,
+.fi-sidebar-item-active .fi-sidebar-item-label {
+    color: var(--pw-cyan-accent) !important;
+}
+
+/* Badges and tags with subtle glow */
+.fi-badge {
+    backdrop-filter: blur(4px) !important;
+}
+
+.fi-badge-success {
+    box-shadow: 0 0 10px rgba(79, 209, 197, 0.2) !important;
+}
+
+/* Modal backdrop */
+.fi-modal-window {
+    backdrop-filter: blur(8px) !important;
+    background: rgba(11, 28, 45, 0.8) !important;
+}
+
+/* Links */
+a {
+    color: var(--pw-cyan-accent) !important;
+    transition: color 0.2s ease !important;
+}
+
+a:hover {
+    color: #5FE3D7 !important;
+}
+
+/* Headings */
+h1, h2, h3, h4, h5, h6 {
+    color: var(--pw-text-light) !important;
+}
+
+/* Muted text */
+.text-gray-500,
+.text-gray-600 {
+    color: var(--pw-text-muted) !important;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+::-webkit-scrollbar-track {
+    background: var(--pw-night-blue);
+    border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb {
+    background: rgba(79, 209, 197, 0.3);
+    border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: rgba(79, 209, 197, 0.5);
+}
+
+/* Selection highlight */
+::selection {
+    background: rgba(79, 209, 197, 0.3);
+    color: var(--pw-text-light);
+}
+
+/* Focus ring */
+*:focus-visible {
+    outline: 2px solid var(--pw-cyan-accent) !important;
+    outline-offset: 2px !important;
+}

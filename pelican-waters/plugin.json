@@ -1,0 +1,19 @@
+{
+    "id": "pelican-waters",
+    "name": "Pelican Waters",
+    "author": "Kikipunk",
+    "version": "1.0.0",
+    "description": "A calm lake theme with Pelican Waters (light) and Midnight Lagoon (dark) palettes.",
+    "category": "theme",
+    "url": "https://github.com/kikipunk/pelican-plugins/tree/main/pelican-waters",
+    "update_url": null,
+    "namespace": "Kikipunk\\PelicanWaters",
+    "class": "PelicanWatersPlugin",
+    "panels": [
+        "admin",
+        "server",
+        "app"
+    ],
+    "panel_version": null,
+    "composer_packages": null
+}

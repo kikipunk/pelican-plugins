@@ -1,0 +1,139 @@
+/* Pelican Waters - Light Theme (Calm Lake at Dawn) */
+
+:root {
+    --pw-deep-blue: #0E2A47;
+    --pw-lake-blue: #1F6FA3;
+    --pw-turquoise: #5FB3B3;
+    --pw-mist-gray: #E6EEF3;
+    --pw-off-white: #F9FBFC;
+    --pw-water-shadow: rgba(31, 111, 163, 0.12);
+    --pw-water-glow: rgba(95, 179, 179, 0.15);
+}
+
+/* Background gradient - misty lake at dawn */
+body {
+    background: linear-gradient(135deg, var(--pw-off-white) 0%, var(--pw-mist-gray) 50%, #dce8f0 100%) !important;
+    background-attachment: fixed !important;
+}
+
+/* Transparent elements for cohesive look */
+.fi-topbar {
+    background: rgba(249, 251, 252, 0.85) !important;
+    backdrop-filter: blur(10px) !important;
+    border-bottom: 1px solid rgba(95, 179, 179, 0.2) !important;
+}
+
+.fi-sidebar {
+    background: rgba(249, 251, 252, 0.9) !important;
+    backdrop-filter: blur(8px) !important;
+}
+
+/* Cards and sections - floating effect */
+.fi-section,
+.fi-card,
+.fi-widget {
+    background: rgba(255, 255, 255, 0.85) !important;
+    backdrop-filter: blur(6px) !important;
+    border: 1px solid rgba(95, 179, 179, 0.15) !important;
+    border-radius: 12px !important;
+    box-shadow: 0 4px 15px var(--pw-water-shadow) !important;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
+}
+
+/* Hover effect - gentle wave rise */
+.fi-section:hover,
+.fi-card:hover,
+.fi-widget:hover {
+    transform: translateY(-2px) !important;
+    box-shadow: 0 8px 25px var(--pw-water-shadow), 0 0 0 1px var(--pw-water-glow) !important;
+}
+
+/* Tables - water reflection separators */
+.fi-ta-content,
+.fi-ta-ctn,
+.fi-ta-table,
+.fi-ta-header,
+.fi-ta-body {
+    background: transparent !important;
+}
+
+.fi-ta-row {
+    border-bottom: 1px solid rgba(95, 179, 179, 0.12) !important;
+    transition: background 0.2s ease !important;
+}
+
+.fi-ta-row:hover {
+    background: rgba(95, 179, 179, 0.06) !important;
+}
+
+/* Buttons - lake blue accent */
+.fi-btn-primary {
+    background: linear-gradient(135deg, var(--pw-lake-blue), #2980b9) !important;
+    box-shadow: 0 2px 8px rgba(31, 111, 163, 0.25) !important;
+    transition: all 0.3s ease !important;
+}
+
+.fi-btn-primary:hover {
+    box-shadow: 0 4px 15px rgba(31, 111, 163, 0.35) !important;
+    transform: translateY(-1px) !important;
+}
+
+/* Input fields */
+.fi-input,
+.fi-select,
+.fi-textarea {
+    border-color: rgba(95, 179, 179, 0.3) !important;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease !important;
+}
+
+.fi-input:focus,
+.fi-select:focus,
+.fi-textarea:focus {
+    border-color: var(--pw-lake-blue) !important;
+    box-shadow: 0 0 0 3px rgba(31, 111, 163, 0.1) !important;
+}
+
+/* Navigation items */
+.fi-sidebar-item {
+    border-radius: 8px !important;
+    transition: all 0.2s ease !important;
+}
+
+.fi-sidebar-item:hover {
+    background: rgba(31, 111, 163, 0.08) !important;
+}
+
+.fi-sidebar-item-active {
+    background: rgba(31, 111, 163, 0.12) !important;
+    border-left: 3px solid var(--pw-lake-blue) !important;
+}
+
+/* Badges and tags */
+.fi-badge {
+    backdrop-filter: blur(4px) !important;
+}
+
+/* Modal backdrop */
+.fi-modal-window {
+    backdrop-filter: blur(8px) !important;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+::-webkit-scrollbar-track {
+    background: var(--pw-mist-gray);
+    border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb {
+    background: rgba(31, 111, 163, 0.3);
+    border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: rgba(31, 111, 163, 0.5);
+}
