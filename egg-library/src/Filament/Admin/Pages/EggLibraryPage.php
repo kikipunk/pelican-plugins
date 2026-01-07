@@ -114,7 +114,14 @@ class EggLibraryPage extends Page implements HasTable
                     ->label(trans('egg-library::strings.labels.name'))
                     ->weight('bold')
                     ->searchable()
-                    ->description(fn (array $record) => Str::limit($record['description'] ?? '', 80)),
+                    ->description(fn (array $record) => Str::limit($record['description'] ?? '', 80))
+                    ->url(function (array $record) {
+                        $url = $record['downloadUrl'];
+                        $url = str_replace('raw.githubusercontent.com', 'github.com', $url);
+                        $url = str_replace('/refs/heads/main/', '/tree/main/', $url);
+
+                        return dirname($url);
+                    }, true),
                 TextColumn::make('installed_status')
                     ->label(trans('egg-library::strings.labels.status'))
                     ->badge()
@@ -234,7 +241,15 @@ class EggLibraryPage extends Page implements HasTable
                     ->label(trans('egg-library::strings.actions.view_source'))
                     ->icon('tabler-brand-github')
                     ->color('gray')
-                    ->url(fn (array $record) => 'https://github.com/pelican-eggs/' . $record['category'] . '/blob/main/' . $record['path'], true),
+                    ->url(function (array $record) {
+                        $url = $record['downloadUrl'];
+                        // Convert raw.githubusercontent.com to github.com
+                        $url = str_replace('raw.githubusercontent.com', 'github.com', $url);
+                        // Convert /refs/heads/main/ to /tree/main/
+                        $url = str_replace('/refs/heads/main/', '/tree/main/', $url);
+                        // Get directory path (remove filename)
+                        return dirname($url);
+                    }, true),
             ]);
     }
 

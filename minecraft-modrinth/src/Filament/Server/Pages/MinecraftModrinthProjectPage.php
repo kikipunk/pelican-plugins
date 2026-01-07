@@ -432,9 +432,10 @@ class MinecraftModrinthProjectPage extends Page implements HasTable
                 if (!$isInstalled) {
                     return "https://modrinth.com/{$record['project_type']}/{$record['slug']}";
                 }
-                // For installed mods, link to Modrinth if we have the info
-                if (isset($record['modrinth_info']['project_id'])) {
-                    return "https://modrinth.com/mod/{$record['modrinth_info']['project_id']}";
+                // For installed mods, link to Modrinth if we have project info with slug
+                if (isset($record['project_info']['slug'])) {
+                    $projectType = $record['project_info']['project_type'] ?? 'mod';
+                    return "https://modrinth.com/{$projectType}/{$record['project_info']['slug']}";
                 }
                 return null;
             }, true)
@@ -880,9 +881,10 @@ class MinecraftModrinthProjectPage extends Page implements HasTable
                     ->viewData([
                         'loaded' => $this->loadedCount,
                         'total' => $this->totalCount,
-                        // is_loading: true only if there are pending files to process
-                        // Don't show if cache was loaded (modsInfoCache not empty) and no pending files
-                        'is_loading' => $this->currentView === 'installed' && !empty($this->pendingFiles),
+                        // Always enable polling on installed view to trigger lazy loading
+                        'is_installed_view' => $this->currentView === 'installed',
+                        // is_loading: true when there are pending files to process
+                        'is_loading' => !empty($this->pendingFiles),
                         // show_indicator: only show visual if >30% need processing
                         'show_indicator' => $this->totalCount > 0 && count($this->pendingFiles) > ($this->totalCount * 0.3),
                     ]),

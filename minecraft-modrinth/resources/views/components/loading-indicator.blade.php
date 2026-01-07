@@ -1,6 +1,6 @@
-{{-- Use Alpine.js x-init to start polling, with proper cleanup and debounce --}}
-{{-- Always render for polling, but only show visual indicator if $show_indicator is true --}}
-@if($is_loading)
+{{-- Always render polling div on installed tab to trigger lazy loading --}}
+{{-- The polling must run to initialize pendingFiles and load mod info --}}
+@if($is_installed_view ?? false)
 <div
     x-data="{ polling: null, stopped: false, loading: false }"
     x-init="
@@ -19,12 +19,12 @@
     "
     x-on:livewire:navigating.window="stopped = true; clearInterval(polling)"
     @beforeunload.window="clearInterval(polling)"
-    @if($show_indicator ?? true)
+    @if($show_indicator && $is_loading)
     class="fi-section rounded-xl bg-white shadow-sm ring-1 ring-gray-950/5 dark:bg-gray-900 dark:ring-white/10"
     style="padding: 1rem; margin-bottom: 1rem;"
     @endif
 >
-    @if($show_indicator ?? true)
+    @if($show_indicator && $is_loading)
     <div style="display: flex; align-items: center; gap: 0.75rem;">
         <svg class="animate-spin" style="height: 1.25rem; width: 1.25rem; color: #3b82f6;" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
             <circle style="opacity: 0.25;" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
