@@ -27,3 +27,9 @@ Based on the original version by [Fritz](https://github.com/pelican-plugins-comm
 A calm, elegant theme for Pelican Panel inspired by serene lake waters. Features animated waves, water ripples, and glass-morphism effects.
 
 <img src="img/pelican-waters-light.png" alt="Pelican Waters Light" width="400"/> <img src="img/pelican-waters-dark.png" alt="Pelican Waters Dark" width="400"/>
+
+### [Egg Library](egg-library/)
+
+Browse and install eggs directly from the pelican-eggs GitHub organization.
+
+<img src="img/egg-library-light.png" alt="Egg Library Light" width="400"/> <img src="img/egg-library-dark.png" alt="Egg Library Dark" width="400"/>

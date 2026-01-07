@@ -1,0 +1,15 @@
+{
+    "id": "egg-library",
+    "name": "Egg Library",
+    "author": "Kikipunk",
+    "version": "1.0.0",
+    "description": "Browse and install eggs from the pelican-eggs GitHub repository",
+    "category": "plugin",
+    "url": "https://github.com/kikipunk/pelican-plugins/tree/main/egg-library",
+    "update_url": null,
+    "namespace": "Kikipunk\\EggLibrary",
+    "class": "EggLibraryPlugin",
+    "panels": ["admin"],
+    "panel_version": null,
+    "composer_packages": null
+}
