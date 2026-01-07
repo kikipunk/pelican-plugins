@@ -32,6 +32,11 @@ class EggLibraryPage extends Page implements HasTable
 
     protected static bool $shouldRegisterNavigation = false;
 
+    public static function canAccess(): bool
+    {
+        return auth()->user()?->can('view egg');
+    }
+
     #[Url]
     public ?string $selectedCategory = null;
 
@@ -137,6 +142,7 @@ class EggLibraryPage extends Page implements HasTable
             ])
             ->recordActions([
                 Action::make('import')
+                    ->authorize(fn () => auth()->user()?->can('import egg'))
                     ->label(trans('egg-library::strings.actions.import'))
                     ->icon('tabler-download')
                     ->color('primary')
