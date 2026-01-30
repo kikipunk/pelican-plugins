@@ -18,10 +18,29 @@ class MinecraftModrinthService
         $version = $server->variables()->where(fn ($builder) => $builder->where('env_variable', 'MINECRAFT_VERSION')->orWhere('env_variable', 'MC_VERSION'))->first()?->server_value;
 
         if (!$version || $version === 'latest') {
-            return config('minecraft-modrinth.latest_minecraft_version');
+            return $this->getLatestMinecraftVersion();
         }
 
         return $version;
+    }
+
+    public function getLatestMinecraftVersion(): ?string
+    {
+        return cache()->remember('mojang_latest_minecraft_version', now()->addMinutes(30), function () {
+            try {
+                $response = Http::timeout(5)
+                    ->connectTimeout(5)
+                    ->throw()
+                    ->get('https://launchermeta.mojang.com/mc/game/version_manifest.json')
+                    ->json();
+
+                return $response['latest']['release'] ?? null;
+            } catch (Exception $exception) {
+                report($exception);
+
+                return null;
+            }
+        });
     }
 
     /** @return array{hits: array<int, array<string, mixed>>, total_hits: int} */

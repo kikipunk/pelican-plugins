@@ -6,11 +6,6 @@ return [
     'minecraft_plugins' => 'Minecraft Plugins',
     'minecraft_datapacks' => 'Minecraft Datapacks',
 
-    'settings' => [
-        'latest_minecraft_version' => 'Latest Minecraft Version',
-        'settings_saved' => 'Settings saved',
-    ],
-
     'page' => [
         'open_folder' => 'Open :folder folder',
         'minecraft_version' => 'Minecraft Version',
